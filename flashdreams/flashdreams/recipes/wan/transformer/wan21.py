@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal, overload
+from typing import Any, overload
 
 import torch
 from torch import Tensor
@@ -196,16 +196,6 @@ class Wan21TransformerConfig(TransformerConfig):
     equivalent and later steps do not need prior K/V state.
     """
 
-    self_attn_cache_type: Literal["bf16", "int4"] = "bf16"
-    """Persistent self-attention cache representation.
-
-    ``"int4"`` uses groupwise packed values with FP16 scales and commits only
-    finalized AR chunks. It is incompatible with CUDA graph capture.
-    """
-
-    int4_cache_storage_device: str = "cpu"
-    """Device retaining packed INT4 K/V tensors between layer calls."""
-
     stamp_image_latent: bool = False
     """See class docstring (mask-inject I2V integration)."""
 
@@ -252,9 +242,6 @@ class Wan21Transformer(Transformer[Wan21TransformerCache]):
     def __init__(self, config: Wan21TransformerConfig) -> None:
         super().__init__(config)
         self.config = config
-        assert not (config.self_attn_cache_type == "int4" and config.use_cuda_graph), (
-            "INT4 K/V cache requires use_cuda_graph=False"
-        )
 
         # Auto-detect CP size from the launcher (``torchrun
         # --nproc_per_node=N``) — the single source of truth. Wan flattens
@@ -394,8 +381,6 @@ class Wan21Transformer(Transformer[Wan21TransformerCache]):
             text_embeddings=text_embeddings,
             img_embeddings=image_embeddings,
             enable_self_attn_cache=cfg.enable_self_attn_cache,
-            self_attn_cache_type=cfg.self_attn_cache_type,
-            int4_cache_storage_device=cfg.int4_cache_storage_device,
         )
 
     def finalize_kv_cache(
@@ -408,19 +393,7 @@ class Wan21Transformer(Transformer[Wan21TransformerCache]):
         """Advance persistent K/V state when self-attention caching is enabled."""
         if not self.config.enable_self_attn_cache:
             return
-        if self.config.self_attn_cache_type != "int4":
-            super().finalize_kv_cache(noisy_latent, timestep, cache, input)
-            return
-
-        cache.network_cache.set_int4_commit(True)
-        if cache.network_cache_uncond is not None:
-            cache.network_cache_uncond.set_int4_commit(True)
-        try:
-            super().finalize_kv_cache(noisy_latent, timestep, cache, input)
-        finally:
-            cache.network_cache.set_int4_commit(False)
-            if cache.network_cache_uncond is not None:
-                cache.network_cache_uncond.set_int4_commit(False)
+        super().finalize_kv_cache(noisy_latent, timestep, cache, input)
 
     @torch.no_grad()
     def initialize_autoregressive_cache(

@@ -81,9 +81,7 @@ PIPELINE_WAN21_T2V_1PT3B_LOW_VRAM = cast(
             transformer=dict(
                 compile_network=False,
                 use_cuda_graph=False,
-                enable_self_attn_cache=True,
-                self_attn_cache_type="int4",
-                int4_cache_storage_device="cpu",
+                enable_self_attn_cache=False,
             ),
         ),
     ),

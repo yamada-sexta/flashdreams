@@ -170,9 +170,7 @@ class Runner(ABC, Generic[RunnerConfigT, PipelineT]):
 
         pipeline = self.config.pipeline.setup().eval()
         self.pipeline = (
-            pipeline.to(device=self.device)
-            if move_pipeline_to_device
-            else pipeline
+            pipeline.to(device=self.device) if move_pipeline_to_device else pipeline
         )
 
     def create_postprocess_stream(

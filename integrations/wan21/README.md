@@ -64,7 +64,7 @@ uv run flashdreams-run wan21-t2v-1.3b-480p --prompt "A cat surfing."
 # Path override (any .txt; first non-empty line is used as the prompt).
 uv run flashdreams-run wan21-t2v-1.3b-480p --prompt /path/to/my_prompt.txt
 
-# 6 GiB mode using staged native UMT5/DiT/VAE and a CPU-backed INT4 K/V cache.
+# 6 GiB mode using the same native UMT5, DiT, scheduler, and VAE.
 uv run flashdreams-run wan21-t2v-1.3b-480p --low-vram
 
 # I2V defaults to DEFAULT_I2V_PROMPT + DEFAULT_I2V_IMAGE_URL (the latter

@@ -87,11 +87,8 @@ def test_low_vram_runner_stages_the_native_pipeline() -> None:
     assert transformer.guidance_scale == regular_transformer.guidance_scale
     assert transformer.compile_network is False
     assert transformer.use_cuda_graph is False
-    assert transformer.enable_self_attn_cache is True
-    assert transformer.self_attn_cache_type == "int4"
-    assert transformer.int4_cache_storage_device == "cpu"
+    assert transformer.enable_self_attn_cache is False
     assert regular_transformer.enable_self_attn_cache is True
-    assert regular_transformer.self_attn_cache_type == "bf16"
 
 
 def test_entry_points_match_module_literals() -> None:

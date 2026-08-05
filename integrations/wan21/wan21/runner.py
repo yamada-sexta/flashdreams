@@ -29,7 +29,6 @@ import tyro
 from loguru import logger
 from tyro.constructors import PrimitiveConstructorSpec
 
-from flashdreams.core.attention import Int4BlockKVCache
 from flashdreams.infra.decoder import StreamingVideoDecoder
 from flashdreams.infra.postprocess import VideoTensorLayout
 from flashdreams.infra.runner import Runner, RunnerConfig
@@ -88,7 +87,7 @@ _LOW_VRAM_FLAG = PrimitiveConstructorSpec(
     str_from_instance=lambda _: [],
 )
 
-_LOW_VRAM_DECODE_CHUNK_SIZE = 1
+_LOW_VRAM_DECODE_CHUNK_SIZE = 2
 """Latent frames decoded per VAE call in low-VRAM mode."""
 
 
@@ -302,28 +301,6 @@ def _release_cuda_stage(module: torch.nn.Module) -> None:
     torch.cuda.empty_cache()
 
 
-def _int4_cache_stats(cache: WanInferencePipelineCache) -> tuple[int, int, int, int]:
-    """Return packed bytes, BF16 bytes, committed tokens, and cache count."""
-    transformer_cache = cache.transformer_cache
-    network_caches = [transformer_cache.network_cache]
-    if transformer_cache.network_cache_uncond is not None:
-        network_caches.append(transformer_cache.network_cache_uncond)
-    packed_bytes = 0
-    uncompressed_bytes = 0
-    committed_tokens: list[int] = []
-    for network_cache in network_caches:
-        for block_cache in network_cache.block_caches:
-            if isinstance(block_cache.self_attn, Int4BlockKVCache):
-                packed_bytes += block_cache.self_attn.storage_nbytes
-                uncompressed_bytes += block_cache.self_attn.uncompressed_nbytes
-                committed_tokens.append(block_cache.self_attn._n_cached)
-    tokens_per_block = min(committed_tokens, default=0)
-    assert all(tokens == tokens_per_block for tokens in committed_tokens), (
-        "INT4 block caches must commit the same token count"
-    )
-    return packed_bytes, uncompressed_bytes, tokens_per_block, len(committed_tokens)
-
-
 @torch.no_grad()
 def _decode_low_vram_chunks(
     decoder: StreamingVideoDecoder,
@@ -412,12 +389,6 @@ def _run_low_vram(runner: Wan21T2VRunner) -> None:
         cache=cache.transformer_cache,
     )
     diffusion.finalize(final_state)
-    (
-        kv_cache_bytes,
-        kv_cache_uncompressed_bytes,
-        kv_cache_tokens_per_block,
-        kv_cache_block_count,
-    ) = _int4_cache_stats(cache)
     torch.cuda.synchronize(device_index)
     diffuse_seconds = time.perf_counter() - diffuse_start
     diffuse_peak_gib = torch.cuda.max_memory_allocated(device_index) / 1024**3
@@ -461,15 +432,6 @@ def _run_low_vram(runner: Wan21T2VRunner) -> None:
         "decode_peak_reserved_gib": decode_peak_reserved_gib,
         "decode_latent_chunk_size": _LOW_VRAM_DECODE_CHUNK_SIZE,
         "gpu_memory_budget_gib": budget,
-        "kv_cache_storage_gib": kv_cache_bytes / 1024**3,
-        "kv_cache_uncompressed_gib": kv_cache_uncompressed_bytes / 1024**3,
-        "kv_cache_tokens_per_block": kv_cache_tokens_per_block,
-        "kv_cache_block_count": kv_cache_block_count,
-        "kv_cache_compression_ratio": (
-            kv_cache_bytes / kv_cache_uncompressed_bytes
-            if kv_cache_uncompressed_bytes
-            else None
-        ),
     }
     ensure_output_dir(config.output_dir)
     video_path = runner_artifact_path(config.output_dir, artifact_name, "mp4")

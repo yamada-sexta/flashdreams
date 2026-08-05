@@ -29,7 +29,6 @@ from torch.distributed import ProcessGroup
 from flashdreams.core.attention import (
     BlockKVCache,
     ContextParallelAttention,
-    Int4BlockKVCache,
     NativeAttention,
 )
 from flashdreams.core.attention.rope import apply_rope_freqs
@@ -352,9 +351,7 @@ class SelfAttention(MultiHeadAttention):
         device: torch.device,
         dtype: torch.dtype,
         enable_cache: bool = True,
-        cache_type: Literal["bf16", "int4"] = "bf16",
-        int4_storage_device: torch.device | str = torch.device("cpu"),
-    ) -> BlockKVCache | Int4BlockKVCache | None:
+    ) -> BlockKVCache | None:
         """Initialize KV cache for streaming self-attention.
 
         Args:
@@ -365,8 +362,6 @@ class SelfAttention(MultiHeadAttention):
             device: Device for cache tensors.
             dtype: Data type for cache tensors.
             enable_cache: Allocate persistent K/V storage when ``True``.
-            cache_type: Native activation-dtype storage or packed INT4 storage.
-            int4_storage_device: Device retaining packed INT4 values and scales.
 
         Returns:
             An initialized cache, or ``None`` for direct attention.
@@ -374,11 +369,7 @@ class SelfAttention(MultiHeadAttention):
         if not enable_cache:
             return None
         total_size = sink_size + window_size
-        cache_cls = Int4BlockKVCache if cache_type == "int4" else BlockKVCache
-        cache_kwargs: dict[str, Any] = {}
-        if cache_type == "int4":
-            cache_kwargs["storage_device"] = int4_storage_device
-        return cache_cls(
+        return BlockKVCache(
             k_shape=(batch_size, total_size, self.n_heads, self.head_dim),
             v_shape=(batch_size, total_size, self.n_heads, self.head_dim),
             seq_dim=-3,
@@ -387,42 +378,18 @@ class SelfAttention(MultiHeadAttention):
             sink_size=sink_size,
             device=device,
             dtype=dtype,
-            **cache_kwargs,
         )
 
     def forward(
         self,
         x: Tensor,
-        kv_cache: BlockKVCache | Int4BlockKVCache | None,
+        kv_cache: BlockKVCache | None,
         rope_freqs: Tensor,
     ) -> Tensor:
         """Run cached or direct self-attention for ``x``."""
         if kv_cache is None:
             current_kv = self.compute_kv(x, rope_freqs)
             return self.apply_kv(x, current_kv, rope_freqs, rope_freqs)
-        if isinstance(kv_cache, Int4BlockKVCache):
-            rope_freqs_q, rope_freqs_k = self._slice_rope_freqs(rope_freqs, kv_cache)
-            current_kv = self.compute_kv(x, rope_freqs_k)
-            current_k = current_kv.cached_k()
-            current_v = current_kv.cached_v()
-            history = kv_cache.cached_history()
-            if kv_cache.commit_current:
-                kv_cache.update(current_k, current_v)
-            if history is None:
-                attention_kv = current_kv
-            else:
-                history_k, history_v = history
-                attention_kv = BlockKVCache.from_tensor(
-                    torch.cat((history_k, current_k), dim=kv_cache.seq_dim),
-                    torch.cat((history_v, current_v), dim=kv_cache.seq_dim),
-                    seq_dim=kv_cache.seq_dim,
-                )
-            return self.apply_kv(
-                x,
-                attention_kv,
-                rope_freqs_q,
-                rope_freqs_k,
-            )
         return super().forward(x, kv_cache, rope_freqs=rope_freqs, update_kv_cache=True)
 
 
@@ -526,7 +493,7 @@ class CrossAttention(MultiHeadAttention):
 class BlockCache:
     """Per-block cache container for self-attention and cross-attention."""
 
-    self_attn: BlockKVCache | Int4BlockKVCache | None
+    self_attn: BlockKVCache | None
     cross_attn: CrossAttnCache
 
     def before_update(self, chunk_idx: int) -> None:
@@ -538,11 +505,6 @@ class BlockCache:
         """Run post-update hook for self-attention cache."""
         if self.self_attn is not None:
             self.self_attn.after_update(chunk_idx)
-
-    def set_int4_commit(self, enabled: bool) -> None:
-        """Toggle finalized-chunk commits for an INT4 self-attention cache."""
-        if isinstance(self.self_attn, Int4BlockKVCache):
-            self.self_attn.commit_current = enabled
 
     def reset(self) -> None:
         """Reset self-attention state when this block owns a cache."""
@@ -615,8 +577,6 @@ class Block(nn.Module):
         context_text: Tensor,
         context_img: Tensor | None = None,
         enable_self_attn_cache: bool = True,
-        self_attn_cache_type: Literal["bf16", "int4"] = "bf16",
-        int4_cache_storage_device: torch.device | str = torch.device("cpu"),
     ) -> BlockCache:
         """Initialize per-branch caches for this transformer block.
 
@@ -627,8 +587,6 @@ class Block(nn.Module):
             context_text: Text context tensor [..., L_text, D].
             context_img: Optional image context tensor [..., L_img, D].
             enable_self_attn_cache: Allocate persistent self-attention K/V.
-            self_attn_cache_type: Native BF16 or packed INT4 cache storage.
-            int4_cache_storage_device: Device retaining packed INT4 cache data.
 
         Returns:
             ``BlockCache`` initialized for this block.
@@ -647,8 +605,6 @@ class Block(nn.Module):
                 device=device,
                 dtype=dtype,
                 enable_cache=enable_self_attn_cache,
-                cache_type=self_attn_cache_type,
-                int4_storage_device=int4_cache_storage_device,
             ),
             cross_attn=self.cross_attn.initialize_cache(context_text, context_img),
         )

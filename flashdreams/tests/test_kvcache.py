@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 import torch
 
-from flashdreams.core.attention.kvcache import BlockKVCache, Int4BlockKVCache
+from flashdreams.core.attention.kvcache import BlockKVCache
 from flashdreams.core.attention.rope import (
     KVCacheRelativeRotaryPositionEmbedding3D,
     RotaryPositionEmbedding3D,
@@ -159,50 +159,6 @@ def test_reset_preserves_storage_and_restores_empty_bookkeeping() -> None:
 
     cache.before_update(0)
     assert cache.size == 2
-
-
-@pytest.mark.ci_cpu
-def test_int4_block_kvcache_rolls_with_bounded_error_and_reduced_storage() -> None:
-    """Packed history preserves rolling layout and stays close to BF16 input."""
-    torch.manual_seed(17)
-    cache = Int4BlockKVCache(
-        k_shape=(1, 8, 2, 32),
-        v_shape=(1, 8, 2, 32),
-        seq_dim=1,
-        chunk_size=4,
-        window_size=8,
-        device="cpu",
-        dtype=torch.bfloat16,
-    )
-    assert cache.storage_nbytes * 4 == cache.uncompressed_nbytes * 9 // 8
-
-    chunks: list[torch.Tensor] = []
-    for chunk_idx in range(3):
-        chunk = torch.randn(1, 4, 2, 32, dtype=torch.bfloat16)
-        chunks.append(chunk)
-        cache.before_update(chunk_idx)
-        expected_history_size = 0 if chunk_idx == 0 else 4
-        assert cache.history_size == expected_history_size
-        cache.update(chunk, chunk)
-        expected = torch.cat(chunks[max(0, chunk_idx - 1) :], dim=1)
-        actual = cache.cached_k()
-        relative_rmse = (
-            actual.float() - expected.float()
-        ).square().mean().sqrt() / expected.float().square().mean().sqrt()
-        assert relative_rmse < 0.12
-        cache.after_update(chunk_idx)
-
-    pointers = tuple(
-        tensor.data_ptr()
-        for tensor in (cache._k, cache._v, cache._k_scale, cache._v_scale)
-    )
-    cache.reset()
-    assert cache.commit_current is False
-    assert cache._n_cached == 0
-    assert pointers == tuple(
-        tensor.data_ptr()
-        for tensor in (cache._k, cache._v, cache._k_scale, cache._v_scale)
-    )
 
 
 @pytest.fixture
