@@ -20,10 +20,11 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
 import ftfy
 import torch
+import tyro
 from torch import Tensor
 from transformers import T5Tokenizer, UMT5EncoderModel
 
@@ -43,7 +44,9 @@ def prompt_clean(text: str) -> str:
 class UMT5TextEncoderConfig(EncoderConfig):
     """Config for the Wan 2.x UMT5 text encoder."""
 
-    _target: type["UMT5TextEncoder"] = field(default_factory=lambda: UMT5TextEncoder)
+    _target: Annotated[type, tyro.conf.Suppress] = field(
+        default_factory=lambda: UMT5TextEncoder
+    )
 
     model_id_or_local_path: Literal[
         "Wan-AI/Wan2.1-T2V-14B-Diffusers",

@@ -64,7 +64,12 @@ class WanDiTNetworkCache:
     def reset(self) -> None:
         """Reset self-attention bookkeeping without reallocating KV buffers."""
         for block_cache in self.block_caches:
-            block_cache.self_attn.reset()
+            block_cache.reset()
+
+    def set_int4_commit(self, enabled: bool) -> None:
+        """Toggle finalized-chunk commits on every packed INT4 block cache."""
+        for block_cache in self.block_caches:
+            block_cache.set_int4_commit(enabled)
 
 
 @dataclass
@@ -330,6 +335,9 @@ class WanDiTNetwork(nn.Module):
         sink_size: int,
         text_embeddings: Tensor,
         img_embeddings: Tensor | None = None,
+        enable_self_attn_cache: bool = True,
+        self_attn_cache_type: Literal["bf16", "int4"] = "bf16",
+        int4_cache_storage_device: torch.device | str = torch.device("cpu"),
     ) -> WanDiTNetworkCache:
         """Initialize block caches from text/image context embeddings.
 
@@ -339,6 +347,9 @@ class WanDiTNetwork(nn.Module):
             sink_size: Sink-token capacity preserved across updates.
             text_embeddings: Text embeddings. UMT5 has shape [..., 512, 4096].
             img_embeddings: Optional image embeddings for I2V. CLIP has shape [..., 256, 1280].
+            enable_self_attn_cache: Allocate persistent self-attention K/V.
+            self_attn_cache_type: Native BF16 or packed INT4 cache storage.
+            int4_cache_storage_device: Device retaining packed INT4 cache data.
 
         Returns:
             ``WanDiTNetworkCache`` containing per-block caches.
@@ -358,7 +369,14 @@ class WanDiTNetwork(nn.Module):
             assert isinstance(block, Block)
             block_caches.append(
                 block.initialize_cache(
-                    chunk_size, window_size, sink_size, context_text, context_img
+                    chunk_size,
+                    window_size,
+                    sink_size,
+                    context_text,
+                    context_img,
+                    enable_self_attn_cache=enable_self_attn_cache,
+                    self_attn_cache_type=self_attn_cache_type,
+                    int4_cache_storage_device=int4_cache_storage_device,
                 )
             )
         return WanDiTNetworkCache(block_caches=block_caches)

@@ -179,3 +179,59 @@ def test_wan_initialize_cache_can_keep_oneshot_encoders_loaded(
     assert captured_contexts[0]["width"] == 2
     assert captured_contexts[1]["height"] == 2
     assert captured_contexts[1]["width"] == 2
+
+
+def test_wan_initialize_cache_accepts_precomputed_text_embeddings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Low-memory T2V can bypass construction of the full UMT5 encoder."""
+    captured_contexts: list[dict[str, Any]] = []
+
+    def capture_initialize_cache(
+        self: StreamInferencePipeline,
+        *,
+        transformer_context: dict[str, Any] | None = None,
+        encoder_context: dict[str, Any] | None = None,
+        decoder_context: dict[str, Any] | None = None,
+    ) -> StreamInferencePipelineCache[Any, Any, Any]:
+        del self, encoder_context, decoder_context
+        assert transformer_context is not None
+        captured_contexts.append(transformer_context)
+        return StreamInferencePipelineCache(
+            transformer_cache=TransformerAutoregressiveCache(),
+            decoder_cache=StreamingDecoderCache(),
+        )
+
+    monkeypatch.setattr(
+        StreamInferencePipeline,
+        "initialize_cache",
+        capture_initialize_cache,
+    )
+
+    pipeline = WanInferencePipeline.__new__(WanInferencePipeline)
+    torch.nn.Module.__init__(pipeline)
+    pipeline.encoder = None
+    pipeline.diffusion_model = SimpleNamespace(
+        transformer=SimpleNamespace(config=Wan21TransformerConfig(guidance_scale=1.0)),
+        device=torch.device("cpu"),
+        dtype=torch.bfloat16,
+    )
+    embeddings = torch.randn(1, 512, 4096)
+
+    cache = pipeline.initialize_cache_from_embeddings(
+        embeddings,
+        height=8,
+        width=12,
+    )
+
+    assert cache.image is None
+    assert len(captured_contexts) == 1
+    context = captured_contexts[0]
+    assert context["height"] == 8
+    assert context["width"] == 12
+    torch.testing.assert_close(
+        context["text_embeddings"],
+        embeddings.to(torch.bfloat16),
+    )
+    assert context["negative_text_embeddings"] is None
+    assert context["image_embeddings"] is None

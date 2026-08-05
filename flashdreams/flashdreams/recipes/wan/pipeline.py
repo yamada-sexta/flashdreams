@@ -171,12 +171,76 @@ class WanInferencePipeline(
             )
 
     @property
-    def _transformer_config(self) -> Wan21TransformerConfig | Wan22TransformerConfig:
+    def _transformer_config(
+        self,
+    ) -> Wan21TransformerConfig | Wan22TransformerConfig:
         # Narrow the base transformer config to the Wan-specific union so
         # ``guidance_scale`` / ``len_t`` are visible to the type checker.
         cfg = self.diffusion_model.transformer.config
         assert isinstance(cfg, (Wan21TransformerConfig, Wan22TransformerConfig))
         return cfg
+
+    @torch.no_grad()
+    def initialize_cache_from_embeddings(
+        self,
+        text_embeddings: Tensor,
+        *,
+        height: int,
+        width: int,
+        negative_text_embeddings: Tensor | None = None,
+    ) -> WanInferencePipelineCache:
+        """Initialize a T2V rollout from precomputed UMT5 embeddings.
+
+        This is the low-memory counterpart to :meth:`initialize_cache`: it
+        lets a caller finish and release the native UMT5 stage before moving
+        the diffusion model to its active device. The transformer remains
+        responsible for validating and moving the embeddings.
+
+        Args:
+            text_embeddings: UMT5 states shaped ``[512, 4096]`` or
+                ``[1, 512, 4096]``.
+            height: Pre-VAE latent height.
+            width: Pre-VAE latent width.
+            negative_text_embeddings: Optional unconditional UMT5 states;
+                required when classifier-free guidance is enabled.
+
+        Returns:
+            Cache to thread through generation and decoding.
+        """
+        assert self.encoder is None, (
+            "Precomputed-embedding initialization currently supports T2V only."
+        )
+        assert height > 0 and width > 0, "height and width must be positive"
+        if self._transformer_config.guidance_scale > 1.0:
+            assert negative_text_embeddings is not None, (
+                "guidance_scale > 1 requires negative_text_embeddings"
+            )
+
+        text_embeddings = text_embeddings.to(
+            device=self.device,
+            dtype=self.diffusion_model.dtype,
+        )
+        if negative_text_embeddings is not None:
+            negative_text_embeddings = negative_text_embeddings.to(
+                device=self.device,
+                dtype=self.diffusion_model.dtype,
+            )
+
+        parent = super().initialize_cache(
+            transformer_context={
+                "height": height,
+                "width": width,
+                "text_embeddings": text_embeddings,
+                "negative_text_embeddings": negative_text_embeddings,
+                "image_embeddings": None,
+            },
+        )
+        return WanInferencePipelineCache(
+            transformer_cache=parent.transformer_cache,
+            encoder_cache=parent.encoder_cache,
+            decoder_cache=parent.decoder_cache,
+            image=None,
+        )
 
     @torch.no_grad()
     def initialize_cache(

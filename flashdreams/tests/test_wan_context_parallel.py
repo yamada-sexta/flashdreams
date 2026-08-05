@@ -8,7 +8,8 @@ from typing import Any, cast
 import pytest
 import torch
 
-from flashdreams.core.attention.kvcache import BlockKVCache
+from flashdreams.core.attention.kvcache import BlockKVCache, Int4BlockKVCache
+from flashdreams.core.attention.native import NativeAttention
 from flashdreams.recipes.wan.transformer.impl import modules as wan_modules
 from flashdreams.recipes.wan.transformer.impl.network import WanDiTNetworkConfig
 from flashdreams.recipes.wan.transformer.wan21 import (
@@ -122,6 +123,104 @@ def test_kvcache_relative_rope_does_not_mutate_cached_keys(monkeypatch) -> None:
     )
 
     torch.testing.assert_close(cache._k, before)
+
+
+def test_direct_self_attention_matches_first_cached_chunk(monkeypatch) -> None:
+    """Direct attention preserves the single-rollout cached computation."""
+    torch.manual_seed(7)
+    attn = wan_modules.SelfAttention(
+        query_dim=12,
+        n_heads=2,
+        head_dim=6,
+        apply_rope_before_kvcache=True,
+    )
+    cast(Any, attn).attn_op = NativeAttention(qkv_format="bshd", backend="math")
+    x = torch.randn(1, 5, 12)
+    rope_freqs = torch.randn(5, 1, 1, 6)
+
+    def _fake_apply_rope_freqs(x, freqs, interleaved=False):
+        del interleaved
+        return x + freqs.transpose(0, 1)
+
+    monkeypatch.setattr(wan_modules, "apply_rope_freqs", _fake_apply_rope_freqs)
+
+    cached = attn.initialize_cache(
+        batch_size=1,
+        chunk_size=5,
+        window_size=5,
+        sink_size=0,
+        device=torch.device("cpu"),
+        dtype=x.dtype,
+    )
+    direct = attn.initialize_cache(
+        batch_size=1,
+        chunk_size=5,
+        window_size=5,
+        sink_size=0,
+        device=torch.device("cpu"),
+        dtype=x.dtype,
+        enable_cache=False,
+    )
+
+    cached.before_update(0)
+    cached_output = attn(x, cached, rope_freqs)
+    direct_output = attn(x, direct, rope_freqs)
+    cached.after_update(0)
+
+    assert direct is None
+    torch.testing.assert_close(direct_output, cached_output)
+
+
+def test_int4_self_attention_commits_only_finalized_chunk(monkeypatch) -> None:
+    """INT4 mode keeps current attention exact and quantizes only on commit."""
+    torch.manual_seed(19)
+    attn = wan_modules.SelfAttention(
+        query_dim=32,
+        n_heads=1,
+        head_dim=32,
+        apply_rope_before_kvcache=True,
+    )
+    cast(Any, attn).attn_op = NativeAttention(qkv_format="bshd", backend="math")
+
+    def _fake_apply_rope_freqs(x, freqs, interleaved=False):
+        del interleaved
+        return x + freqs.transpose(0, 1)
+
+    monkeypatch.setattr(wan_modules, "apply_rope_freqs", _fake_apply_rope_freqs)
+    int4_cache = attn.initialize_cache(
+        batch_size=1,
+        chunk_size=4,
+        window_size=8,
+        sink_size=0,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        cache_type="int4",
+    )
+    direct_cache = attn.initialize_cache(
+        batch_size=1,
+        chunk_size=4,
+        window_size=8,
+        sink_size=0,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        enable_cache=False,
+    )
+    assert isinstance(int4_cache, Int4BlockKVCache)
+
+    x = torch.randn(1, 4, 32)
+    rope = torch.randn(4, 1, 1, 32)
+    int4_cache.before_update(0)
+    denoise_output = attn(x, int4_cache, rope)
+    direct_output = attn(x, direct_cache, rope)
+    assert int4_cache._n_cached == 0
+    torch.testing.assert_close(denoise_output, direct_output)
+
+    int4_cache.commit_current = True
+    finalize_output = attn(x, int4_cache, rope)
+    torch.testing.assert_close(finalize_output, direct_output)
+    int4_cache.commit_current = False
+    int4_cache.after_update(0)
+    assert int4_cache._n_cached == 4
 
 
 def test_wan21_uses_no_cp_group_when_not_distributed(monkeypatch) -> None:

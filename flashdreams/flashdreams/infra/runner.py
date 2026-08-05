@@ -120,7 +120,12 @@ class Runner(ABC, Generic[RunnerConfigT, PipelineT]):
     config: RunnerConfigT
     pipeline: PipelineT
 
-    def __init__(self, config: RunnerConfigT) -> None:
+    def __init__(
+        self,
+        config: RunnerConfigT,
+        *,
+        move_pipeline_to_device: bool = True,
+    ) -> None:
         # Bridge ``torchrun`` -> ``torch.distributed`` *before*
         # ``config.pipeline.setup()`` so integration transformers can pick up
         # the CP world size at construction time. Idempotent: skipped
@@ -139,6 +144,7 @@ class Runner(ABC, Generic[RunnerConfigT, PipelineT]):
             self.world_size = 1
             self.global_rank = 0
             device = config.device
+        self.device = torch.device(device)
         self.is_rank_zero = self.global_rank == 0
         preflight_runtime_write_paths(output_dir=config.output_dir)
 
@@ -162,8 +168,12 @@ class Runner(ABC, Generic[RunnerConfigT, PipelineT]):
             )  # ty:ignore[redundant-cast]
         self.config = effective_config
 
-        pipeline = self.config.pipeline.setup()
-        self.pipeline = pipeline.to(device=device).eval()
+        pipeline = self.config.pipeline.setup().eval()
+        self.pipeline = (
+            pipeline.to(device=self.device)
+            if move_pipeline_to_device
+            else pipeline
+        )
 
     def create_postprocess_stream(
         self,

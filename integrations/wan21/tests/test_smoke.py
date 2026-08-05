@@ -24,9 +24,15 @@ from typing import cast
 import pytest
 import tomli as tomllib
 from wan21 import config as config_mod
-from wan21.config import RUNNER_CONFIGS
+from wan21.config import (
+    PIPELINE_WAN21_T2V_1PT3B_480P,
+    PIPELINE_WAN21_T2V_1PT3B_LOW_VRAM,
+    RUNNER_CONFIGS,
+    RUNNER_WAN21_T2V_1PT3B_480P,
+)
 
 from flashdreams.infra.runner import RunnerConfig
+from flashdreams.recipes.wan import Wan21TransformerConfig
 
 pytestmark = pytest.mark.ci_gpu
 
@@ -54,6 +60,38 @@ def test_runners_have_descriptions() -> None:
         slug for slug, cfg in RUNNER_CONFIGS.items() if not cfg.description.strip()
     ]
     assert not empty, f"runners missing description: {empty}"
+
+
+def test_low_vram_runner_stages_the_native_pipeline() -> None:
+    """Low-VRAM mode changes residency, not the model or endpoint."""
+    cfg = RUNNER_WAN21_T2V_1PT3B_480P
+    assert cfg.low_vram is False
+    assert cfg.low_vram_pipeline is PIPELINE_WAN21_T2V_1PT3B_LOW_VRAM
+    assert cfg.gpu_memory_budget_gib == 6.0
+    low = PIPELINE_WAN21_T2V_1PT3B_LOW_VRAM
+    regular = PIPELINE_WAN21_T2V_1PT3B_480P
+    assert low is not regular
+    assert low.name == regular.name == cfg.runner_name
+    assert type(low.text_encoder) is type(regular.text_encoder)
+    assert low.text_encoder == regular.text_encoder
+    assert low.decoder is not None and regular.decoder is not None
+    assert low.decoder.checkpoint_path == regular.decoder.checkpoint_path
+    assert low.diffusion_model.scheduler == regular.diffusion_model.scheduler
+    transformer = low.diffusion_model.transformer
+    regular_transformer = regular.diffusion_model.transformer
+    assert isinstance(transformer, Wan21TransformerConfig)
+    assert isinstance(regular_transformer, Wan21TransformerConfig)
+    assert transformer.network == regular_transformer.network
+    assert transformer.checkpoint_path == regular_transformer.checkpoint_path
+    assert transformer.len_t == regular_transformer.len_t == 21
+    assert transformer.guidance_scale == regular_transformer.guidance_scale
+    assert transformer.compile_network is False
+    assert transformer.use_cuda_graph is False
+    assert transformer.enable_self_attn_cache is True
+    assert transformer.self_attn_cache_type == "int4"
+    assert transformer.int4_cache_storage_device == "cpu"
+    assert regular_transformer.enable_self_attn_cache is True
+    assert regular_transformer.self_attn_cache_type == "bf16"
 
 
 def test_entry_points_match_module_literals() -> None:

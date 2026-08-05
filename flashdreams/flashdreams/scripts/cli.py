@@ -46,7 +46,10 @@ from typing import Annotated
 
 import tyro
 
-from flashdreams.configs.runner_configs import _annotated_base_runner_union
+from flashdreams.configs.runner_configs import (
+    _annotated_base_runner_union,
+    all_runners,
+)
 from flashdreams.core.distributed import shutdown as shutdown_distributed
 from flashdreams.core.io.disk import disk_space_error_from_exception
 from flashdreams.infra.runner import RunnerConfig
@@ -103,7 +106,12 @@ def entrypoint() -> None:
     importing :mod:`flashdreams.scripts.cli` is cheap.
     """
     tyro.extras.set_accent_color("bright_yellow")
-    union = _annotated_base_runner_union()
+    runner_names = all_runners().keys()
+    selected_runner = next(
+        (arg for arg in sys.argv[1:] if arg in runner_names),
+        None,
+    )
+    union = _annotated_base_runner_union(selected_runner)
 
     # ``name=""`` on the synthetic ``runner`` field suppresses its own
     # name from child prefixes, so ``--runner.prompt`` collapses to

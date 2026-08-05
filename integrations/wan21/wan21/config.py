@@ -17,6 +17,9 @@
 
 from __future__ import annotations
 
+from typing import cast
+
+from flashdreams.infra.config import derive_config
 from flashdreams.infra.diffusion.model import DiffusionModelConfig
 from flashdreams.infra.diffusion.scheduler import (
     FlowMatchUniPCSchedulerConfig,
@@ -65,10 +68,31 @@ PIPELINE_WAN21_T2V_1PT3B_480P = WanInferencePipelineConfig(
         ),
     ),
 )
+PIPELINE_WAN21_T2V_1PT3B_LOW_VRAM = cast(
+    WanInferencePipelineConfig,
+    derive_config(
+        PIPELINE_WAN21_T2V_1PT3B_480P,
+        enable_sync_and_profile=False,
+        decoder=dict(
+            use_cuda_graph=False,
+            use_compile=False,
+        ),
+        diffusion_model=dict(
+            transformer=dict(
+                compile_network=False,
+                use_cuda_graph=False,
+                enable_self_attn_cache=True,
+                self_attn_cache_type="int4",
+                int4_cache_storage_device="cpu",
+            ),
+        ),
+    ),
+)
 RUNNER_WAN21_T2V_1PT3B_480P = Wan21T2VRunnerConfig(
     runner_name=PIPELINE_WAN21_T2V_1PT3B_480P.name,
     description="Wan 2.1 T2V 1.3B at 480p (single AR step, prompt-only).",
     pipeline=PIPELINE_WAN21_T2V_1PT3B_480P,
+    low_vram_pipeline=PIPELINE_WAN21_T2V_1PT3B_LOW_VRAM,
 )
 
 PIPELINE_WAN21_I2V_14B_480P = WanInferencePipelineConfig(

@@ -83,7 +83,7 @@ def all_runners() -> OrderedDict[str, RunnerConfig]:
     return _sort(runners)
 
 
-def _annotated_base_runner_union():
+def _annotated_base_runner_union(selected_runner: str | None = None):
     """Build the tyro subcommand union over every discovered runner.
 
     Built lazily so importing this module never pays the entry-point
@@ -98,6 +98,8 @@ def _annotated_base_runner_union():
       ``--no-foo`` flags inside nested configs.
     """
     runners = all_runners()
+    if selected_runner is not None:
+        runners = {selected_runner: runners[selected_runner]}
     descriptions = {k: cfg.description for k, cfg in runners.items()}
     # ``Any`` because ty rejects the runtime tyro union as a type-form
     # arg to the ``SuppressFixed`` / ``FlagConversionOff`` markers below.
